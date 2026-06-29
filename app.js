@@ -1,11 +1,13 @@
 /* Barcode Generator
  * Fitur:
- * - Mode Tunggal: generate barcode dari satu teks/angka, bisa diatur jumlahnya
+ * - Mode Tunggal: satu teks/angka, bisa diatur jumlahnya
+ * - Mode Tabel: form tabel editable (tambah/hapus baris), tiap baris satu barcode
  * - Mode Batch/CSV: tiap baris (atau baris CSV) menjadi barcode berbeda
- * - Pilihan format: CODE128, EAN-13, EAN-8, UPC, CODE39, ITF-14, MSI, dll
+ * - Format: CODE128, EAN-13, EAN-8, UPC, CODE39, ITF-14, MSI, dll
+ * - Pengaturan kertas (A4/Letter/Legal/A5, orientasi, kolom per baris) untuk PDF
  * - Download PNG per barcode
- * - Export semua ke PDF
- * Library: JsBarcode (render) + jsPDF (export)
+ * - Export ke PDF dan Excel (XLSX dengan gambar barcode)
+ * Library: JsBarcode (render), jsPDF (PDF), ExcelJS (Excel)
  */
 (function () {
   "use strict";
@@ -24,20 +26,27 @@
     barHeight: $("barHeight"),
     displayValue: $("displayValue"),
     numbered: $("numbered"),
+    paperSize: $("paperSize"),
+    orientation: $("orientation"),
+    columns: $("columns"),
     generateBtn: $("generate-btn"),
-    exportBtn: $("export-btn"),
+    exportPdfBtn: $("export-pdf-btn"),
+    exportXlsxBtn: $("export-xlsx-btn"),
     clearBtn: $("clear-btn"),
+    addRow: $("add-row"),
+    tbody: $("data-tbody"),
     grid: $("qr-grid"),
     countBadge: $("count-badge"),
     statusText: $("status-text"),
     modeTabs: document.querySelectorAll(".mode-tab"),
-    modeSingle: document.querySelector(".mode-single"),
+    modeSingle: document.querySelectorAll(".mode-single"),
+    modeTable: document.querySelector(".mode-table"),
     modeBatch: document.querySelector(".mode-batch"),
   };
 
   // State
-  let generated = []; // { dataUrl, caption, index, showIndex }
-  let mode = "single"; // 'single' | 'batch'
+  let generated = [];
+  let mode = "single";
   let debounceTimer = null;
 
   /* ---------- Utilities ---------- */
@@ -48,9 +57,7 @@
     return Math.min(max, Math.max(min, n));
   }
 
-  function setStatus(text) {
-    els.statusText.textContent = text;
-  }
+  function setStatus(text) { els.statusText.textContent = text; }
 
   function showPlaceholder() {
     els.grid.classList.add("empty");
@@ -58,7 +65,8 @@
       '<div class="placeholder"><div class="placeholder-icon">|||</div>' +
       "<p>Masukkan teks atau angka untuk melihat barcode di sini.</p></div>";
     els.countBadge.textContent = "0";
-    els.exportBtn.disabled = true;
+    els.exportPdfBtn.disabled = true;
+    els.exportXlsxBtn.disabled = true;
   }
 
   function safeFileName(str, fallback) {
@@ -66,41 +74,107 @@
     return (clean || fallback).slice(0, 40);
   }
 
-  /* ---------- Parsing daftar ---------- */
+  function timestamp() {
+    return new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  }
+
+  /* ---------- Tabel input (mode Tabel) ---------- */
+
+  function addTableRow(data, label) {
+    const tr = document.createElement("tr");
+
+    const tdNo = document.createElement("td");
+    tdNo.className = "col-no";
+    tr.appendChild(tdNo);
+
+    const tdData = document.createElement("td");
+    const inData = document.createElement("input");
+    inData.type = "text";
+    inData.className = "row-data";
+    inData.placeholder = "mis. 5901234123457";
+    inData.value = data || "";
+    inData.addEventListener("input", debouncedGenerate);
+    tdData.appendChild(inData);
+    tr.appendChild(tdData);
+
+    const tdLabel = document.createElement("td");
+    const inLabel = document.createElement("input");
+    inLabel.type = "text";
+    inLabel.className = "row-label";
+    inLabel.placeholder = "opsional";
+    inLabel.value = label || "";
+    inLabel.addEventListener("input", debouncedGenerate);
+    tdLabel.appendChild(inLabel);
+    tr.appendChild(tdLabel);
+
+    const tdAct = document.createElement("td");
+    tdAct.className = "col-act";
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "row-del";
+    del.textContent = "\u00D7";
+    del.title = "Hapus baris";
+    del.addEventListener("click", () => {
+      tr.remove();
+      renumberRows();
+      generate();
+    });
+    tdAct.appendChild(del);
+    tr.appendChild(tdAct);
+
+    els.tbody.appendChild(tr);
+    renumberRows();
+  }
+
+  function renumberRows() {
+    Array.from(els.tbody.children).forEach((tr, i) => {
+      tr.querySelector(".col-no").textContent = String(i + 1);
+    });
+  }
+
+  function getTableItems() {
+    const items = [];
+    Array.from(els.tbody.children).forEach((tr) => {
+      const data = tr.querySelector(".row-data").value.trim();
+      const label = tr.querySelector(".row-label").value.trim();
+      if (data) items.push({ content: data, label });
+    });
+    return items;
+  }
+
+  /* ---------- Parsing daftar (batch) ---------- */
 
   function parseLine(line) {
-    let content = line;
-    let label = "";
+    let content = line, label = "";
     if (line.includes("|")) {
-      const parts = line.split("|");
-      content = parts[0].trim();
-      label = parts.slice(1).join("|").trim();
+      const p = line.split("|");
+      content = p[0].trim();
+      label = p.slice(1).join("|").trim();
     } else if (line.includes(",")) {
-      const parts = line.split(",");
-      content = parts[0].trim();
-      label = parts.slice(1).join(",").trim();
+      const p = line.split(",");
+      content = p[0].trim();
+      label = p.slice(1).join(",").trim();
     }
     return { content: content.trim(), label };
   }
 
   function buildItems() {
     const numbered = els.numbered.value === "yes";
-    const items = [];
+    let items = [];
 
     if (mode === "single") {
       const content = els.content.value.trim();
-      if (!content) return items;
-      const label = els.label.value.trim();
-      const quantity = clampNum(els.quantity.value, 1, 500, 1);
-      els.quantity.value = quantity;
-      for (let i = 0; i < quantity; i++) {
-        items.push({ content, label });
+      if (content) {
+        const label = els.label.value.trim();
+        const quantity = clampNum(els.quantity.value, 1, 500, 1);
+        els.quantity.value = quantity;
+        for (let i = 0; i < quantity; i++) items.push({ content, label });
       }
+    } else if (mode === "table") {
+      items = getTableItems();
     } else {
       const lines = els.batchContent.value
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0);
+        .split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
       lines.forEach((line) => {
         const { content, label } = parseLine(line);
         if (content) items.push({ content, label });
@@ -109,6 +183,7 @@
 
     return items.map((it, idx) => ({
       content: it.content,
+      caption: it.label || it.content,
       label: it.label,
       index: idx + 1,
       showIndex: numbered,
@@ -117,7 +192,6 @@
 
   /* ---------- Generate barcode ---------- */
 
-  // Mengembalikan { dataUrl } atau { error }
   function makeBarcode(content, opts) {
     const canvas = document.createElement("canvas");
     try {
@@ -160,43 +234,30 @@
     }
 
     generated = [];
-    let errorCount = 0;
-    let lastError = "";
+    let errorCount = 0, lastError = "";
 
     items.forEach((it) => {
-      const result = makeBarcode(it.content, opts);
-      if (result.error) {
+      const r = makeBarcode(it.content, opts);
+      if (r.error) {
         errorCount++;
-        lastError = result.error;
-        generated.push({
-          error: result.error,
-          caption: it.label || it.content,
-          index: it.index,
-          showIndex: it.showIndex,
-        });
+        lastError = r.error;
+        generated.push({ error: r.error, content: it.content, caption: it.caption, label: it.label, index: it.index, showIndex: it.showIndex });
       } else {
         generated.push({
-          dataUrl: result.dataUrl,
-          ratio: result.height / result.width,
-          caption: it.label || it.content,
-          index: it.index,
-          showIndex: it.showIndex,
+          dataUrl: r.dataUrl, width: r.width, height: r.height, ratio: r.height / r.width,
+          content: it.content, caption: it.caption, label: it.label, index: it.index, showIndex: it.showIndex,
         });
       }
     });
 
     renderGrid();
-
     const okCount = generated.length - errorCount;
-    els.exportBtn.disabled = okCount === 0;
+    els.exportPdfBtn.disabled = okCount === 0;
+    els.exportXlsxBtn.disabled = okCount === 0;
 
-    if (errorCount === 0) {
-      setStatus(okCount + " barcode dibuat.");
-    } else if (okCount === 0) {
-      setStatus("Gagal: " + lastError);
-    } else {
-      setStatus(okCount + " barcode dibuat, " + errorCount + " gagal (format tidak cocok).");
-    }
+    if (errorCount === 0) setStatus(okCount + " barcode dibuat.");
+    else if (okCount === 0) setStatus("Gagal: " + lastError);
+    else setStatus(okCount + " barcode dibuat, " + errorCount + " gagal (format tidak cocok).");
   }
 
   /* ---------- Render ---------- */
@@ -260,7 +321,7 @@
     a.remove();
   }
 
-  /* ---------- Export PDF ---------- */
+  /* ---------- Export PDF (mengikuti pengaturan kertas) ---------- */
 
   function exportPdf() {
     const valid = generated.filter((g) => !g.error);
@@ -268,19 +329,24 @@
     setStatus("Menyiapkan PDF...");
 
     const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const doc = new jsPDF({
+      unit: "mm",
+      format: els.paperSize.value,
+      orientation: els.orientation.value,
+    });
 
     const pageW = doc.internal.pageSize.getWidth();
     const pageH = doc.internal.pageSize.getHeight();
     const margin = 12;
-    const cols = 2;
-    const gap = 8;
+    const cols = clampNum(els.columns.value, 1, 8, 3);
+    els.columns.value = cols;
+    const gap = 6;
     const captionH = 7;
 
     const cellW = (pageW - margin * 2 - gap * (cols - 1)) / cols;
 
-    valid.forEach((item, i) => {
-      // Jaga rasio asli barcode
+    let i = 0;
+    valid.forEach((item) => {
       const ratio = item.ratio || 0.45;
       const imgW = cellW;
       const imgH = imgW * ratio;
@@ -302,14 +368,75 @@
       doc.setTextColor(40);
       let caption = item.caption || "";
       if (item.showIndex) caption = "#" + item.index + "  " + caption;
-      const maxChars = 36;
+      const maxChars = Math.floor(cellW / 1.6);
       if (caption.length > maxChars) caption = caption.slice(0, maxChars - 1) + "\u2026";
       doc.text(caption, x + imgW / 2, y + imgH + 4, { align: "center" });
+      i++;
     });
 
-    const fname = "barcodes-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".pdf";
-    doc.save(fname);
-    setStatus(valid.length + " barcode di-export ke PDF.");
+    doc.save("barcodes-" + timestamp() + ".pdf");
+    setStatus(valid.length + " barcode di-export ke PDF (" + els.paperSize.value.toUpperCase() + ").");
+  }
+
+  /* ---------- Export Excel (XLSX dengan gambar) ---------- */
+
+  async function exportXlsx() {
+    const valid = generated.filter((g) => !g.error);
+    if (!valid.length) return;
+    if (typeof ExcelJS === "undefined") {
+      setStatus("Library Excel belum termuat. Periksa koneksi internet.");
+      return;
+    }
+    setStatus("Menyiapkan Excel...");
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "Barcode Generator";
+    const ws = wb.addWorksheet("Barcodes");
+
+    ws.columns = [
+      { header: "No", key: "no", width: 6 },
+      { header: "Data", key: "data", width: 24 },
+      { header: "Label", key: "label", width: 24 },
+      { header: "Barcode", key: "barcode", width: 34 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    ws.getRow(1).alignment = { vertical: "middle" };
+
+    const DISPLAY_W = 200; // lebar gambar di Excel (px)
+
+    valid.forEach((item, i) => {
+      const excelRow = i + 2; // baris 1 = header
+      ws.addRow({ no: item.index, data: item.content, label: item.label || "" });
+
+      const displayW = DISPLAY_W;
+      const displayH = displayW * (item.ratio || 0.45);
+
+      const imageId = wb.addImage({ base64: item.dataUrl, extension: "png" });
+      ws.addImage(imageId, {
+        tl: { col: 3.1, row: excelRow - 1 + 0.1 }, // kolom D (0-based 3), baris terkait
+        ext: { width: displayW, height: displayH },
+        editAs: "oneCell",
+      });
+
+      const r = ws.getRow(excelRow);
+      r.height = displayH * 0.75 + 6; // px -> point (~0.75)
+      r.alignment = { vertical: "middle" };
+    });
+
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "barcodes-" + timestamp() + ".xlsx";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    setStatus(valid.length + " barcode di-export ke Excel.");
   }
 
   /* ---------- CSV / file import ---------- */
@@ -330,23 +457,28 @@
   function setMode(newMode) {
     mode = newMode;
     els.modeTabs.forEach((t) => t.classList.toggle("active", t.dataset.mode === newMode));
-    els.modeSingle.hidden = newMode !== "single";
+    els.modeSingle.forEach((el) => (el.hidden = newMode !== "single"));
+    els.modeTable.hidden = newMode !== "table";
     els.modeBatch.hidden = newMode !== "batch";
-    const qtyField = els.quantity.closest(".field");
-    if (qtyField) qtyField.style.opacity = newMode === "single" ? "1" : "0.45";
-    els.quantity.disabled = newMode !== "single";
+    if (newMode === "table" && els.tbody.children.length === 0) {
+      addTableRow();
+      addTableRow();
+      addTableRow();
+    }
   }
 
   /* ---------- Reset ---------- */
 
   function clearAll() {
-    els.form.reset();
+    els.content.value = "";
+    els.label.value = "";
+    els.batchContent.value = "";
+    els.csvFile.value = "";
     els.quantity.value = 1;
     els.barWidth.value = 2;
     els.barHeight.value = 100;
-    els.batchContent.value = "";
-    els.csvFile.value = "";
-    setMode("single");
+    els.tbody.innerHTML = "";
+    if (mode === "table") { addTableRow(); addTableRow(); addTableRow(); }
     generated = [];
     showPlaceholder();
     setStatus("Belum ada barcode.");
@@ -360,30 +492,25 @@
   /* ---------- Event listeners ---------- */
 
   els.generateBtn.addEventListener("click", generate);
-  els.exportBtn.addEventListener("click", exportPdf);
+  els.exportPdfBtn.addEventListener("click", exportPdf);
+  els.exportXlsxBtn.addEventListener("click", exportXlsx);
   els.clearBtn.addEventListener("click", clearAll);
+  els.addRow.addEventListener("click", () => { addTableRow(); });
 
   els.content.addEventListener("input", debouncedGenerate);
   els.label.addEventListener("input", debouncedGenerate);
   els.batchContent.addEventListener("input", debouncedGenerate);
 
-  [els.format, els.quantity, els.barWidth, els.barHeight, els.displayValue, els.numbered].forEach(
-    (el) => el.addEventListener("change", generate)
-  );
+  [els.format, els.quantity, els.barWidth, els.barHeight, els.displayValue, els.numbered]
+    .forEach((el) => el.addEventListener("change", generate));
 
   els.csvFile.addEventListener("change", (e) => handleCsvFile(e.target.files[0]));
 
   els.modeTabs.forEach((tab) =>
-    tab.addEventListener("click", () => {
-      setMode(tab.dataset.mode);
-      generate();
-    })
+    tab.addEventListener("click", () => { setMode(tab.dataset.mode); generate(); })
   );
 
-  els.form.addEventListener("submit", (e) => {
-    e.preventDefault();
-    generate();
-  });
+  els.form.addEventListener("submit", (e) => { e.preventDefault(); generate(); });
 
   // State awal
   setMode("single");
