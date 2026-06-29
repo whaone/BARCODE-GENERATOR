@@ -446,6 +446,14 @@
                 <input type="number" id="columns" name="columns" min="1" max="12" value="3" />
               </div>
             </div>
+            <div class="field">
+              <label for="dpi">Resolusi cetak (PDF)</label>
+              <select id="dpi" name="dpi">
+                <option value="150">150 DPI — draft</option>
+                <option value="300" selected>300 DPI — bagus (disarankan)</option>
+                <option value="600">600 DPI — terbaik (file besar)</option>
+              </select>
+            </div>
             <small class="hint" id="layout-hint">Ukuran barcode otomatis diperbesar/diperkecil agar pas N per lembar.</small>
           </fieldset>
 
@@ -519,6 +527,7 @@
       layout: $("layout"),
       columns: $("columns"),
       perPage: $("perPage"),
+      dpi: $("dpi"),
       perpageField: $("perpage-field"),
       columnsField: $("columns-field"),
       layoutHint: $("layout-hint"),
@@ -695,25 +704,46 @@
 
     /* ---------- Generate barcode ---------- */
 
-    function makeBarcode(content, opts) {
+    const RENDER_MARGIN = 10, RENDER_FONT = 16;
+
+    // Render barcode ke canvas pada skala tertentu (skala menjaga rasio sama persis,
+    // hanya menaikkan jumlah piksel sehingga tetap tajam saat dicetak besar)
+    function renderBarcodeCanvas(content, opts, scale) {
+      scale = scale || 1;
       const canvas = document.createElement("canvas");
+      JsBarcode(canvas, content, {
+        format: opts.format,
+        width: opts.barWidth * scale,
+        height: opts.barHeight * scale,
+        displayValue: opts.displayValue,
+        margin: RENDER_MARGIN * scale,
+        background: "#ffffff",
+        lineColor: "#0f172a",
+        fontSize: RENDER_FONT * scale,
+        valid: function (valid) {
+          if (!valid) throw new Error("Nilai tidak valid untuk format " + opts.format);
+        },
+      });
+      return canvas;
+    }
+
+    function makeBarcode(content, opts) {
       try {
-        JsBarcode(canvas, content, {
-          format: opts.format,
-          width: opts.barWidth,
-          height: opts.barHeight,
-          displayValue: opts.displayValue,
-          margin: 10,
-          background: "#ffffff",
-          lineColor: "#0f172a",
-          fontSize: 16,
-          valid: function (valid) {
-            if (!valid) throw new Error("Nilai tidak valid untuk format " + opts.format);
-          },
-        });
+        const canvas = renderBarcodeCanvas(content, opts, 1);
         return { dataUrl: canvas.toDataURL("image/png"), width: canvas.width, height: canvas.height };
       } catch (err) {
         return { error: err.message || String(err) };
+      }
+    }
+
+    // Versi resolusi tinggi dari sebuah item (untuk PDF/PNG/Excel)
+    function renderHiRes(item, scale) {
+      scale = Math.min(Math.max(Math.round(scale), 1), 16);
+      if (scale <= 1 || !item.renderOpts) return item.dataUrl;
+      try {
+        return renderBarcodeCanvas(item.content, item.renderOpts, scale).toDataURL("image/png");
+      } catch (e) {
+        return item.dataUrl;
       }
     }
 
@@ -749,6 +779,7 @@
           generated.push({
             dataUrl: r.dataUrl, width: r.width, height: r.height, ratio: r.height / r.width,
             content: it.content, caption: it.caption, label: it.label, index: it.index, showIndex: it.showIndex,
+            renderOpts: opts,
           });
         }
       });
@@ -816,8 +847,10 @@
     /* ---------- Download PNG per barcode ---------- */
 
     function downloadPng(item) {
+      // Unduh PNG resolusi tinggi (tajam untuk dicetak)
+      const url = renderHiRes(item, Math.ceil(1200 / (item.width || 300)));
       const a = document.createElement("a");
-      a.href = item.dataUrl;
+      a.href = url;
       a.download = "barcode-" + safeFileName(item.caption, "code") + "-" + item.index + ".png";
       document.body.appendChild(a);
       a.click();
@@ -842,6 +875,7 @@
       const margin = 10, gap = 4, captionH = 6;
       const PW = pageW - margin * 2;
       const PH = pageH - margin * 2;
+      const dpi = clampNum(els.dpi.value, 72, 1200, 300);
 
       // Rasio (tinggi/lebar) terbesar dipakai untuk memilih grid agar semua muat
       const repRatio = Math.max.apply(null, valid.map((v) => v.ratio || 0.45));
@@ -894,7 +928,10 @@
         const iH = iW * ratio;
         const ix = cx + (cellW - iW) / 2;
         const iy = cy + (imgAreaH - iH) / 2;
-        doc.addImage(item.dataUrl, "PNG", ix, iy, iW, iH);
+        // Render ulang pada resolusi tinggi sesuai ukuran cetak & DPI terpilih
+        const targetPx = (iW / 25.4) * dpi;
+        const url = renderHiRes(item, targetPx / (item.width || 200));
+        doc.addImage(url, "PNG", ix, iy, iW, iH);
 
         // Caption
         doc.setFontSize(7);
@@ -946,7 +983,7 @@
         const displayW = DISPLAY_W;
         const displayH = displayW * (item.ratio || 0.45);
 
-        const imageId = wb.addImage({ base64: item.dataUrl, extension: "png" });
+        const imageId = wb.addImage({ base64: renderHiRes(item, Math.ceil(600 / (item.width || 300))), extension: "png" });
         ws.addImage(imageId, {
           tl: { col: 3.1, row: excelRow - 1 + 0.1 }, // kolom D (0-based 3)
           ext: { width: displayW, height: displayH },
