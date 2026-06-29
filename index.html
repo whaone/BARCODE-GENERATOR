@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Barcode Generator</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="logo">|||</div>
+      <div>
+        <h1>Barcode Generator</h1>
+        <p class="subtitle">Buat barcode dari teks atau angka, atur jumlah, lalu export ke PDF.</p>
+      </div>
+    </header>
+
+    <main class="layout">
+      <!-- Form Panel -->
+      <section class="panel form-panel">
+        <h2>Form Input</h2>
+
+        <form id="qr-form" autocomplete="off">
+          <div class="field">
+            <label>Mode</label>
+            <div class="mode-tabs">
+              <button type="button" class="mode-tab active" data-mode="single">Tunggal</button>
+              <button type="button" class="mode-tab" data-mode="batch">Batch / CSV</button>
+            </div>
+          </div>
+
+          <!-- Mode tunggal -->
+          <div class="field mode-single">
+            <label for="content">Isi (teks / angka)</label>
+            <textarea id="content" name="content" rows="2"
+              placeholder="Contoh: ABC-12345 atau 5901234123457"></textarea>
+            <small class="hint">Barcode dibuat otomatis saat Anda mengetik.</small>
+          </div>
+
+          <!-- Mode batch / CSV -->
+          <div class="field mode-batch" hidden>
+            <label for="batch-content">Daftar (1 baris = 1 barcode)</label>
+            <textarea id="batch-content" name="batch-content" rows="5"
+              placeholder="Baris 1: isi | label (opsional)&#10;5901234123457 | Produk A&#10;ABC-12345 | Item B&#10;0123456789012"></textarea>
+            <small class="hint">Format tiap baris: <code>isi | label</code> (label opsional). Atau upload file CSV/TXT.</small>
+            <input type="file" id="csv-file" accept=".csv,.txt" class="file-input" />
+          </div>
+
+          <div class="field">
+            <label for="label">Label (opsional)</label>
+            <input type="text" id="label" name="label" placeholder="Teks di bawah barcode, mis. Nama Produk" />
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="format">Format Barcode</label>
+              <select id="format" name="format">
+                <option value="CODE128" selected>CODE128 (umum, teks &amp; angka)</option>
+                <option value="EAN13">EAN-13 (13 digit)</option>
+                <option value="EAN8">EAN-8 (8 digit)</option>
+                <option value="UPC">UPC-A (12 digit)</option>
+                <option value="CODE39">CODE39</option>
+                <option value="ITF14">ITF-14 (14 digit)</option>
+                <option value="MSI">MSI</option>
+                <option value="pharmacode">Pharmacode</option>
+                <option value="codabar">Codabar</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="quantity">Jumlah</label>
+              <input type="number" id="quantity" name="quantity" min="1" max="500" value="1" />
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="barWidth">Lebar bar</label>
+              <input type="number" id="barWidth" name="barWidth" min="1" max="6" step="0.5" value="2" />
+            </div>
+            <div class="field">
+              <label for="barHeight">Tinggi (px)</label>
+              <input type="number" id="barHeight" name="barHeight" min="20" max="300" step="10" value="100" />
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="displayValue">Tampilkan teks</label>
+              <select id="displayValue" name="displayValue">
+                <option value="yes" selected>Ya</option>
+                <option value="no">Tidak</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="numbered">Nomor urut</label>
+              <select id="numbered" name="numbered">
+                <option value="no">Tidak</option>
+                <option value="yes">Ya (1, 2, 3, ...)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button type="button" id="generate-btn" class="btn primary">Generate</button>
+            <button type="button" id="export-btn" class="btn" disabled>Export PDF</button>
+            <button type="button" id="clear-btn" class="btn ghost">Bersihkan</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Preview Panel -->
+      <section class="panel preview-panel">
+        <div class="preview-head">
+          <h2>Hasil <span id="count-badge" class="badge">0</span></h2>
+          <span class="muted" id="status-text">Belum ada barcode.</span>
+        </div>
+        <div id="qr-grid" class="qr-grid empty">
+          <div class="placeholder">
+            <div class="placeholder-icon">|||</div>
+            <p>Masukkan teks atau angka untuk melihat barcode di sini.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Dibuat dengan &#10084; — semua proses berjalan di browser Anda.</span>
+    </footer>
+  </div>
+
+  <!-- Libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
