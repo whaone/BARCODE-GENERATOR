@@ -413,10 +413,12 @@
               <div class="field">
                 <label for="paperSize">Ukuran kertas</label>
                 <select id="paperSize" name="paperSize">
-                  <option value="a4" selected>A4</option>
-                  <option value="letter">Letter</option>
-                  <option value="legal">Legal</option>
-                  <option value="a5">A5</option>
+                  <option value="a4" selected>A4 (210 × 297 mm)</option>
+                  <option value="f4">F4 / Folio (215 × 330 mm)</option>
+                  <option value="letter">Letter (216 × 279 mm)</option>
+                  <option value="legal">Legal (216 × 356 mm)</option>
+                  <option value="a3">A3 (297 × 420 mm)</option>
+                  <option value="a5">A5 (148 × 210 mm)</option>
                 </select>
               </div>
               <div class="field">
@@ -428,9 +430,23 @@
               </div>
             </div>
             <div class="field">
-              <label for="columns">Kolom per baris</label>
-              <input type="number" id="columns" name="columns" min="1" max="8" value="3" />
+              <label for="layout">Tata letak</label>
+              <select id="layout" name="layout">
+                <option value="perpage" selected>Otomatis — isi N barcode per lembar</option>
+                <option value="columns">Manual — tentukan jumlah kolom</option>
+              </select>
             </div>
+            <div class="field-row">
+              <div class="field" id="perpage-field">
+                <label for="perPage">Barcode per lembar</label>
+                <input type="number" id="perPage" name="perPage" min="1" max="200" value="20" />
+              </div>
+              <div class="field" id="columns-field" hidden>
+                <label for="columns">Kolom per baris</label>
+                <input type="number" id="columns" name="columns" min="1" max="12" value="3" />
+              </div>
+            </div>
+            <small class="hint" id="layout-hint">Ukuran barcode otomatis diperbesar/diperkecil agar pas N per lembar.</small>
           </fieldset>
 
           <div class="actions">
@@ -500,7 +516,12 @@
       numbered: $("numbered"),
       paperSize: $("paperSize"),
       orientation: $("orientation"),
+      layout: $("layout"),
       columns: $("columns"),
+      perPage: $("perPage"),
+      perpageField: $("perpage-field"),
+      columnsField: $("columns-field"),
+      layoutHint: $("layout-hint"),
       generateBtn: $("generate-btn"),
       exportPdfBtn: $("export-pdf-btn"),
       exportXlsxBtn: $("export-xlsx-btn"),
@@ -520,6 +541,16 @@
     let generated = [];
     let mode = "single";
     let debounceTimer = null;
+
+    // Ukuran kertas dalam mm (basis portrait: [sisi pendek, sisi panjang])
+    const PAPER_MM = {
+      a4: [210, 297],
+      f4: [215, 330],      // F4 / Folio
+      letter: [215.9, 279.4],
+      legal: [215.9, 355.6],
+      a3: [297, 420],
+      a5: [148, 210],
+    };
 
     /* ---------- Utilities ---------- */
 
@@ -801,53 +832,85 @@
       setStatus("Menyiapkan PDF...");
 
       const { jsPDF } = window.jspdf;
-      const doc = new jsPDF({
-        unit: "mm",
-        format: els.paperSize.value,
-        orientation: els.orientation.value,
-      });
+      const base = PAPER_MM[els.paperSize.value] || PAPER_MM.a4;
+      const orientation = els.orientation.value;
+      const doc = new jsPDF({ unit: "mm", orientation: orientation, format: base });
 
+      // Pakai dimensi halaman aktual (sudah mempertimbangkan orientasi)
       const pageW = doc.internal.pageSize.getWidth();
       const pageH = doc.internal.pageSize.getHeight();
-      const margin = 12;
-      const cols = clampNum(els.columns.value, 1, 8, 3);
-      els.columns.value = cols;
-      const gap = 6;
-      const captionH = 7;
+      const margin = 10, gap = 4, captionH = 6;
+      const PW = pageW - margin * 2;
+      const PH = pageH - margin * 2;
 
-      const cellW = (pageW - margin * 2 - gap * (cols - 1)) / cols;
+      // Rasio (tinggi/lebar) terbesar dipakai untuk memilih grid agar semua muat
+      const repRatio = Math.max.apply(null, valid.map((v) => v.ratio || 0.45));
 
-      let i = 0;
-      valid.forEach((item) => {
-        const ratio = item.ratio || 0.45;
-        const imgW = cellW;
-        const imgH = imgW * ratio;
-        const rowH = imgH + captionH + gap;
-        const rowsPerPage = Math.max(1, Math.floor((pageH - margin * 2) / rowH));
-        const perPage = cols * rowsPerPage;
+      const layout = els.layout.value;
+      let cols, rows, cellW, cellH, perPage;
 
+      if (layout === "columns") {
+        // Mode manual: lebar barcode = lebar kolom, baris mengalir mengikuti tinggi
+        cols = clampNum(els.columns.value, 1, 12, 3);
+        els.columns.value = cols;
+        cellW = (PW - gap * (cols - 1)) / cols;
+        const imgH = cellW * repRatio;
+        cellH = imgH + captionH;
+        rows = Math.max(1, Math.floor((PH + gap) / (cellH + gap)));
+        perPage = cols * rows;
+      } else {
+        // Mode otomatis: pilih jumlah kolom yang memaksimalkan ukuran barcode
+        perPage = clampNum(els.perPage.value, 1, 200, 20);
+        els.perPage.value = perPage;
+        let best = { cols: 1, score: 0 };
+        for (let c = 1; c <= perPage; c++) {
+          const r = Math.ceil(perPage / c);
+          const cw = (PW - gap * (c - 1)) / c;
+          const ch = (PH - gap * (r - 1)) / r;
+          const imgMaxH = ch - captionH;
+          if (cw <= 0 || imgMaxH <= 0) continue;
+          const iw = Math.min(cw, imgMaxH / repRatio); // lebar barcode hasil scaling
+          if (iw > best.score) best = { cols: c, score: iw };
+        }
+        cols = best.cols;
+        rows = Math.ceil(perPage / cols);
+        cellW = (PW - gap * (cols - 1)) / cols;
+        cellH = (PH - gap * (rows - 1)) / rows;
+      }
+
+      valid.forEach((item, i) => {
         const posInPage = i % perPage;
         if (i > 0 && posInPage === 0) doc.addPage();
 
         const col = posInPage % cols;
         const row = Math.floor(posInPage / cols);
-        const x = margin + col * (cellW + gap);
-        const y = margin + row * rowH;
+        const cx = margin + col * (cellW + gap);
+        const cy = margin + row * (cellH + gap);
 
-        doc.addImage(item.dataUrl, "PNG", x, y, imgW, imgH);
+        // Auto-scale: paskan tiap barcode ke dalam sel (jaga rasio masing-masing)
+        const imgAreaH = cellH - captionH;
+        const ratio = item.ratio || 0.45;
+        const iW = Math.min(cellW, imgAreaH / ratio);
+        const iH = iW * ratio;
+        const ix = cx + (cellW - iW) / 2;
+        const iy = cy + (imgAreaH - iH) / 2;
+        doc.addImage(item.dataUrl, "PNG", ix, iy, iW, iH);
 
-        doc.setFontSize(8);
+        // Caption
+        doc.setFontSize(7);
         doc.setTextColor(40);
         let caption = item.caption || "";
         if (item.showIndex) caption = "#" + item.index + "  " + caption;
-        const maxChars = Math.floor(cellW / 1.6);
+        const maxChars = Math.max(6, Math.floor(cellW / 1.4));
         if (caption.length > maxChars) caption = caption.slice(0, maxChars - 1) + "\u2026";
-        doc.text(caption, x + imgW / 2, y + imgH + 4, { align: "center" });
-        i++;
+        doc.text(caption, cx + cellW / 2, cy + cellH - 1.5, { align: "center" });
       });
 
       doc.save("barcodes-" + timestamp() + ".pdf");
-      setStatus(valid.length + " barcode di-export ke PDF (" + els.paperSize.value.toUpperCase() + ").");
+      const info = layout === "columns"
+        ? cols + " kolom"
+        : perPage + "/lembar (" + cols + "\u00D7" + rows + ")";
+      setStatus(valid.length + " barcode di-export ke PDF " + els.paperSize.value.toUpperCase() + " \u2014 " + info + ".");
     }
 
     /* ---------- Export Excel (XLSX dengan gambar) ---------- */
@@ -961,6 +1024,17 @@
       debounceTimer = setTimeout(generate, 350);
     }
 
+    /* ---------- Toggle field tata letak ---------- */
+
+    function updateLayoutFields() {
+      const isCols = els.layout.value === "columns";
+      els.columnsField.hidden = !isCols;
+      els.perpageField.hidden = isCols;
+      els.layoutHint.textContent = isCols
+        ? "Barcode mengisi lebar kolom; jumlah baris menyesuaikan tinggi halaman."
+        : "Ukuran barcode otomatis diperbesar/diperkecil agar pas N per lembar.";
+    }
+
     /* ---------- Event listeners ---------- */
 
     els.generateBtn.addEventListener("click", generate);
@@ -978,6 +1052,8 @@
 
     els.csvFile.addEventListener("change", (e) => handleCsvFile(e.target.files[0]));
 
+    els.layout.addEventListener("change", updateLayoutFields);
+
     els.modeTabs.forEach((tab) =>
       tab.addEventListener("click", () => { setMode(tab.dataset.mode); generate(); })
     );
@@ -986,6 +1062,7 @@
 
     // State awal
     setMode("single");
+    updateLayoutFields();
     showPlaceholder();
   })();
   </script>
